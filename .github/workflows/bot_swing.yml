@@ -1,0 +1,61 @@
+name: Bot Swing Diario
+
+on:
+  schedule:
+    # Argentina es UTC-3 todo el año (sin horario de verano desde 2009).
+    - cron: "30 13 * * 1-5"        # 10:30 ART -> apertura (1 vez)
+    - cron: "*/5 13-19 * * 1-5"    # 10:35-16:55 ART aprox -> monitoreo (cada 5 min)
+    - cron: "0 20 * * 1-5"         # 17:00 ART -> cierre (1 vez)
+  workflow_dispatch:
+    inputs:
+      modo:
+        description: "apertura, monitoreo o cierre"
+        required: true
+        default: "apertura"
+
+jobs:
+  correr_bot:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5   # cada corrida es corta -- si algo cuelga, se corta solo
+    steps:
+      - name: Descargar el repo
+        uses: actions/checkout@v4
+
+      - name: Configurar Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Instalar dependencias
+        run: |
+          pip install --upgrade pip
+          pip install yfinance ta pandas numpy requests gspread google-auth
+
+      - name: Determinar modo según el horario del cron
+        id: modo
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "modo=${{ inputs.modo }}" >> "$GITHUB_OUTPUT"
+          elif [ "${{ github.event.schedule }}" = "30 13 * * 1-5" ]; then
+            echo "modo=apertura" >> "$GITHUB_OUTPUT"
+          elif [ "${{ github.event.schedule }}" = "0 20 * * 1-5" ]; then
+            echo "modo=cierre" >> "$GITHUB_OUTPUT"
+          else
+            echo "modo=monitoreo" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Correr rutina del bot
+        env:
+          MODO_RUTINA: ${{ steps.modo.outputs.modo }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          GOOGLE_SHEETS_ID: ${{ secrets.GOOGLE_SHEETS_ID }}
+          GOOGLE_SHEETS_CREDENTIALS_JSON: ${{ secrets.GOOGLE_SHEETS_CREDENTIALS_JSON }}
+          IOL_USUARIO: ${{ secrets.IOL_USUARIO }}
+          IOL_PASSWORD: ${{ secrets.IOL_PASSWORD }}
+        run: python bot_swing_diario.py
+
+# NOTA: GitHub cron NO garantiza el minuto exacto (puede demorar unos
+# minutos en horas de mucha carga en GitHub). Para una estrategia swing
+# de holding multi-día esto es aceptable -- no es crítico perder 2-3
+# minutos en la detección de un cruce de stop.
