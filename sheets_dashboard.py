@@ -43,6 +43,7 @@ import json
 import gspread
 from google.oauth2.service_account import Credentials
 from datetime import datetime
+from zoneinfo import ZoneInfo
 
 SCOPES = [
     "https://www.googleapis.com/auth/spreadsheets",
@@ -51,6 +52,7 @@ SCOPES = [
 
 GOOGLE_SHEETS_ID = os.environ.get("GOOGLE_SHEETS_ID", "")
 GOOGLE_SHEETS_CREDENTIALS_JSON = os.environ.get("GOOGLE_SHEETS_CREDENTIALS_JSON", "")
+TZ_ARGENTINA = ZoneInfo("America/Argentina/Buenos_Aires")
 
 
 def conectar_sheet():
@@ -136,7 +138,7 @@ def actualizar_resumen(sheet, capital_inicial: float, efectivo_disponible: float
         capital_total = efectivo_disponible + valor_posiciones_abiertas
         retorno_pct = 100 * (capital_total - capital_inicial) / capital_inicial if capital_inicial else 0
         ws.append_row([
-            datetime.now().strftime("%d/%m/%Y %H:%M"),
+            datetime.now(TZ_ARGENTINA).strftime("%d/%m/%Y %H:%M"),
             round(capital_inicial, 2), round(efectivo_disponible, 2),
             round(valor_posiciones_abiertas, 2), round(capital_total, 2),
             round(retorno_pct, 2), operaciones_totales, round(win_rate_pct, 2),
