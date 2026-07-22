@@ -1,40 +1,52 @@
 # -*- coding: utf-8 -*-
 """
 ============================================================================
- DASHBOARD GOOGLE SHEETS - Bot Swing RSI+Bollinger
+ DASHBOARD GOOGLE SHEETS -- Bot BB-Touch + BBW + EMA50
 ============================================================================
 
 Setup necesario (una sola vez):
-  1. En Google Cloud Console (console.cloud.google.com):
-     - Crear un proyecto (o usar uno existente)
-     - Habilitar "Google Sheets API" y "Google Drive API"
-     - Crear una Service Account -> Generar clave JSON (se descarga un
-       archivo, ej. "credenciales_sheets.json")
-  2. Crear una planilla nueva en Google Sheets, con 3 hojas (tabs):
-       "Operaciones"        -> historial de cierres (una fila por trade)
-       "Posiciones Abiertas" -> snapshot de lo que está abierto ahora
-       "Resumen"            -> métricas agregadas (capital, retorno, etc.)
-  3. Compartir la planilla con el email de la Service Account (algo
-     como xxxx@xxxx.iam.gserviceaccount.com, está en el JSON descargado)
-     dándole permiso de Editor.
-  4. Guardar el JSON de credenciales como secret en GitHub Actions
-     (como texto completo, ej. GOOGLE_SHEETS_CREDENTIALS_JSON) y el ID
-     de la planilla (está en la URL: .../d/<ESTE_ID>/edit) como otro
-     secret (GOOGLE_SHEETS_ID).
+  1. En Google Cloud Console: habilitar "Google Sheets API" y "Google
+     Drive API", crear una Service Account, generar clave JSON.
+  2. Crear una planilla nueva en Google Sheets con estas 7 hojas (tabs),
+     con los encabezados de la fila 1 EXACTAMENTE como se listan abajo
+     (se crean a mano una sola vez; el bot escribe desde la fila 2):
 
-Columnas esperadas en cada hoja (crear los encabezados una sola vez a
-mano en la planilla, en la fila 1):
+  "Operaciones Activas":
+      Ticker | Tipo | Fecha Entrada | Precio Entrada | Acciones |
+      Precio Actual | Fase | Stop Vigente | SL Fase A ($) | P&L $ |
+      P&L % | Días en Posición
 
-  Operaciones: Fecha Entrada | Fecha Salida | Ticker | Precio Entrada |
-               Precio Salida | Acciones | Motivo Salida | PnL $ | PnL % |
-               Días Holding
+  "Historico Ordenes TOTAL":
+      Ticker | Tipo | Fecha Entrada | Precio Entrada | Fecha Salida |
+      Precio Salida | Acciones | SL Fase A ($) | Motivo Salida | P&L $ |
+      P&L % | Días Holding
 
-  Posiciones Abiertas: Ticker | Fecha Entrada | Precio Entrada | Acciones |
-                        Stop Vigente | Take Profit | Días en Posición
+  "P&L Total":
+      Fecha | Capital Inicial | Efectivo | Valor Posiciones |
+      Capital Total | Retorno % | Operaciones Totales | Win Rate % |
+      Max Drawdown %
 
-  Resumen: Fecha Actualización | Capital Inicial | Efectivo Disponible |
-           Valor Posiciones Abiertas | Capital Total | Retorno % |
-           Operaciones Totales | Win Rate %
+  "Historico CEDEAR", "Historico Merval Lider", "Historico Merval General":
+      mismas columnas que "Historico Ordenes TOTAL" -- cada cierre se
+      escribe en TOTAL y, además, en la hoja de su categoría (`tipo` del
+      ticker en tickers_activos.csv), para tener el desglose sin
+      depender de fórmulas QUERY/FILTER frágiles ante ediciones manuales.
+
+  "Indicadores":
+      Ticker | Tipo | Fecha | Precio Actual | RSI14 | BB Inferior |
+      BB Media | BB Superior | BBW | EMA50 | Señal Pendiente |
+      Señal Confirmada | En Cooldown
+
+  3. Compartir la planilla con el email de la Service Account (permiso
+     Editor). Guardar el JSON de credenciales y el ID de la planilla
+     como secrets de GitHub Actions (GOOGLE_SHEETS_CREDENTIALS_JSON,
+     GOOGLE_SHEETS_ID).
+
+GRÁFICOS: este módulo deja los datos de "P&L Total" listos en filas
+crecientes (una por día) para que los gráficos se armen UNA VEZ a mano
+en Sheets apuntando a esas columnas -- se actualizan solos porque el
+rango crece. No se generan gráficos por API acá (agregaría llamadas de
+bajo nivel a Sheets API v4 sin necesidad real).
 ============================================================================
 """
 
@@ -54,13 +66,20 @@ GOOGLE_SHEETS_ID = os.environ.get("GOOGLE_SHEETS_ID", "")
 GOOGLE_SHEETS_CREDENTIALS_JSON = os.environ.get("GOOGLE_SHEETS_CREDENTIALS_JSON", "")
 TZ_ARGENTINA = ZoneInfo("America/Argentina/Buenos_Aires")
 
+# Nombre de hoja histórica por tipo de ticker -- si aparece un `tipo`
+# nuevo que no está acá, el cierre igual se registra en TOTAL, pero se
+# imprime un aviso en vez de fallar (así un typo en tickers_activos.csv
+# no frena al bot).
+HOJA_POR_TIPO = {
+    "cedear": "Historico CEDEAR",
+    "merval_lider": "Historico Merval Lider",
+    "merval_general": "Historico Merval General",
+}
+
 
 def conectar_sheet():
-    """
-    Conecta con la planilla usando las credenciales de Service Account.
-    Devuelve el objeto Spreadsheet de gspread, o None si falla (el bot
-    no debería frenar sus operaciones por un problema del dashboard).
-    """
+    """Devuelve el objeto Spreadsheet de gspread, o None si falla (el
+    bot no debe frenar sus operaciones por un problema del dashboard)."""
     if not GOOGLE_SHEETS_ID or not GOOGLE_SHEETS_CREDENTIALS_JSON:
         print("[sheets] GOOGLE_SHEETS_ID / GOOGLE_SHEETS_CREDENTIALS_JSON no configurados")
         return None
@@ -74,111 +93,155 @@ def conectar_sheet():
         return None
 
 
-def registrar_operacion_cerrada(sheet, fecha_entrada: str, fecha_salida: str,
-                                 ticker: str, precio_entrada: float,
-                                 precio_salida: float, acciones: int,
-                                 motivo_salida: str, pnl_pesos: float,
-                                 pnl_pct: float, dias_holding: int):
-    """Agrega una fila al historial de operaciones cerradas."""
-    if sheet is None:
-        return
-    try:
-        ws = sheet.worksheet("Operaciones")
-        ws.append_row([
-            fecha_entrada, fecha_salida, ticker,
-            round(precio_entrada, 2), round(precio_salida, 2), acciones,
-            motivo_salida, round(pnl_pesos, 2), round(pnl_pct, 2), dias_holding,
-        ])
-    except Exception as e:
-        print(f"[sheets] error al registrar operación: {e}")
+def _hoy_str() -> str:
+    return datetime.now(TZ_ARGENTINA).strftime("%d/%m/%Y")
 
 
-def actualizar_posiciones_abiertas(sheet, posiciones: dict):
+def _ahora_str() -> str:
+    return datetime.now(TZ_ARGENTINA).strftime("%d/%m/%Y %H:%M")
+
+
+# ============================================================================
+# 1) OPERACIONES ACTIVAS -- se reescribe completa en cada corrida
+# ============================================================================
+def actualizar_operaciones_activas(sheet, posiciones: dict):
     """
-    Reescribe por completo la hoja "Posiciones Abiertas" con el estado
-    actual (se llama después de cada rutina).
-    `posiciones`: dict ticker -> {fecha_entrada, precio_entrada, acciones,
-    stop_vigente, stop_original, supero_ema21, dias_en_posicion}
-
-    `stop_original` (además de `stop_vigente`) es necesario para poder
-    distinguir un cierre por stop_loss real (nunca se movió el nivel) de
-    un trailing_stop (el nivel ya subió al menos una vez) -- el cooldown
-    de 3 días solo debe aplicar al primer caso.
-
-    `supero_ema21` indica en qué fase del trailing progresivo está la
-    posición (Fase A: mínimo del día anterior | Fase B: EMA21).
+    `posiciones`: dict ticker -> {
+        "tipo": str, "fecha_entrada": str, "precio_entrada": float,
+        "acciones": int, "precio_actual": float, "fase": "A" | "B",
+        "stop_vigente": float, "sl_fase_a": float, "dias_en_posicion": int,
+    }
+    P&L $ / % se calculan acá mismo contra `precio_actual` (mark-to-market,
+    no es el resultado final -- eso lo registra el histórico al cerrar).
     """
     if sheet is None:
         return
     try:
-        ws = sheet.worksheet("Posiciones Abiertas")
+        ws = sheet.worksheet("Operaciones Activas")
         ws.clear()
-        filas = [["Ticker", "Fecha Entrada", "Precio Entrada", "Acciones",
-                   "Stop Original", "Stop Vigente", "Supero EMA21", "Días en Posición"]]
-        for ticker, p in posiciones.items():
-            stop_original = p.get("stop_original", p.get("stop_vigente", 0))
+        filas = [["Ticker", "Tipo", "Fecha Entrada", "Precio Entrada", "Acciones",
+                   "Precio Actual", "Fase", "Stop Vigente", "SL Fase A ($)",
+                   "P&L $", "P&L %", "Días en Posición"]]
+        for ticker, p in sorted(posiciones.items()):
+            precio_entrada = p.get("precio_entrada", 0)
+            acciones = p.get("acciones", 0)
+            precio_actual = p.get("precio_actual", 0)
+            pnl_pesos = (precio_actual - precio_entrada) * acciones
+            pnl_pct = 100 * (precio_actual - precio_entrada) / precio_entrada if precio_entrada else 0
             filas.append([
-                ticker, p.get("fecha_entrada", ""),
-                round(p.get("precio_entrada", 0), 2), p.get("acciones", 0),
-                round(stop_original, 2), round(p.get("stop_vigente", 0), 2),
-                "SI" if p.get("supero_ema21") else "no", p.get("dias_en_posicion", 0),
+                ticker, p.get("tipo", ""), p.get("fecha_entrada", ""),
+                round(precio_entrada, 2), acciones, round(precio_actual, 2),
+                p.get("fase", ""), round(p.get("stop_vigente", 0), 2),
+                round(p.get("sl_fase_a", 0), 2),
+                round(pnl_pesos, 2), round(pnl_pct, 2),
+                p.get("dias_en_posicion", 0),
             ])
         ws.update(filas)
     except Exception as e:
-        print(f"[sheets] error al actualizar posiciones abiertas: {e}")
+        print(f"[sheets] error al actualizar Operaciones Activas: {e}")
 
 
-def actualizar_resumen(sheet, capital_inicial: float, efectivo_disponible: float,
-                        valor_posiciones_abiertas: float, operaciones_totales: int,
-                        win_rate_pct: float):
-    """Agrega una fila nueva al resumen (se llama al final de cada rutina,
-    para tener una serie histórica de cómo evoluciona la cuenta día a día,
-    no solo el último estado)."""
+# ============================================================================
+# 2) HISTORICO ORDENES TOTAL + desglose por tipo (4/5/6) -- se agrega fila
+# ============================================================================
+def registrar_operacion_cerrada(sheet, ticker: str, tipo: str, fecha_entrada: str,
+                                 precio_entrada: float, fecha_salida: str,
+                                 precio_salida: float, acciones: int,
+                                 sl_fase_a: float, motivo_salida: str,
+                                 pnl_pesos: float, pnl_pct: float, dias_holding: int):
+    """Agrega la operación cerrada en 'Historico Ordenes TOTAL' y, además,
+    en la hoja de su categoría (CEDEAR / Merval Lider / Merval General)."""
+    if sheet is None:
+        return
+    fila = [
+        ticker, tipo, fecha_entrada, round(precio_entrada, 2), fecha_salida,
+        round(precio_salida, 2), acciones, round(sl_fase_a, 2), motivo_salida,
+        round(pnl_pesos, 2), round(pnl_pct, 2), dias_holding,
+    ]
+    try:
+        sheet.worksheet("Historico Ordenes TOTAL").append_row(fila)
+    except Exception as e:
+        print(f"[sheets] error al registrar en Historico TOTAL: {e}")
+
+    nombre_hoja_tipo = HOJA_POR_TIPO.get(tipo)
+    if nombre_hoja_tipo is None:
+        print(f"[sheets] tipo '{tipo}' sin hoja histórica asociada -- solo quedó en TOTAL")
+        return
+    try:
+        sheet.worksheet(nombre_hoja_tipo).append_row(fila)
+    except Exception as e:
+        print(f"[sheets] error al registrar en {nombre_hoja_tipo}: {e}")
+
+
+# ============================================================================
+# 3) P&L TOTAL (dashboard) -- una fila nueva por día
+# ============================================================================
+def dashboard_de_hoy_ya_registrado(sheet) -> bool:
+    """Evita filas duplicadas si rutina_cierre reintenta varias veces en
+    la misma ventana (16:27-16:50)."""
+    if sheet is None:
+        return False
+    try:
+        ws = sheet.worksheet("P&L Total")
+        filas = ws.get_all_records()
+    except Exception:
+        return False
+    if not filas:
+        return False
+    return str(filas[-1].get("Fecha", "")).startswith(_hoy_str())
+
+
+def actualizar_dashboard_pnl(sheet, capital_inicial: float, efectivo: float,
+                              valor_posiciones: float, operaciones_totales: int,
+                              win_rate_pct: float, max_drawdown_pct: float):
     if sheet is None:
         return
     try:
-        ws = sheet.worksheet("Resumen")
-        capital_total = efectivo_disponible + valor_posiciones_abiertas
+        ws = sheet.worksheet("P&L Total")
+        capital_total = efectivo + valor_posiciones
         retorno_pct = 100 * (capital_total - capital_inicial) / capital_inicial if capital_inicial else 0
         ws.append_row([
-            datetime.now(TZ_ARGENTINA).strftime("%d/%m/%Y %H:%M"),
-            round(capital_inicial, 2), round(efectivo_disponible, 2),
-            round(valor_posiciones_abiertas, 2), round(capital_total, 2),
+            _ahora_str(), round(capital_inicial, 2), round(efectivo, 2),
+            round(valor_posiciones, 2), round(capital_total, 2),
             round(retorno_pct, 2), operaciones_totales, round(win_rate_pct, 2),
+            round(max_drawdown_pct, 2),
         ])
     except Exception as e:
-        print(f"[sheets] error al actualizar resumen: {e}")
+        print(f"[sheets] error al actualizar P&L Total: {e}")
 
 
+# ============================================================================
+# 7) INDICADORES -- se reescribe completa 1 vez por día en apertura
+# ============================================================================
 def actualizar_indicadores(sheet, indicadores: dict):
     """
-    Reescribe por completo la hoja "Indicadores" con el RSI14 y las
-    Bandas de Bollinger (20,2) de cada ticker del universo, calculados
-    con la vela diaria de ayer (la misma que usa la señal de entrada).
-    Se llama 1 vez por día, en rutina_apertura -- no tiene sentido
-    llamarlo en el monitoreo de cada 5 min, porque estos valores no
-    cambian hasta que cierra la próxima vela diaria.
-
-    `indicadores`: dict ticker -> {"close": float, "rsi14": float,
-    "bb_lower": float, "bb_mid": float, "bb_upper": float,
-    "senal_confirmada": bool}
+    `indicadores`: dict ticker -> {
+        "tipo": str, "precio_actual": float, "rsi14": float,
+        "bb_lower": float, "bb_mid": float, "bb_upper": float,
+        "bbw": float, "ema50": float, "senal_pendiente": bool,
+        "senal_confirmada": bool, "en_cooldown": bool,
+    }
     """
     if sheet is None:
         return
     try:
         ws = sheet.worksheet("Indicadores")
         ws.clear()
-        filas = [["Ticker", "Fecha", "Close", "RSI14", "BB Inferior",
-                   "BB Media", "BB Superior", "Señal Confirmada"]]
-        ahora = datetime.now(TZ_ARGENTINA).strftime("%d/%m/%Y %H:%M")
+        filas = [["Ticker", "Tipo", "Fecha", "Precio Actual", "RSI14",
+                   "BB Inferior", "BB Media", "BB Superior", "BBW", "EMA50",
+                   "Señal Pendiente", "Señal Confirmada", "En Cooldown"]]
+        ahora = _ahora_str()
         for ticker, ind in sorted(indicadores.items()):
             filas.append([
-                ticker, ahora,
-                round(ind.get("close", 0), 2), round(ind.get("rsi14", 0), 2),
+                ticker, ind.get("tipo", ""), ahora,
+                round(ind.get("precio_actual", 0), 2), round(ind.get("rsi14", 0), 2),
                 round(ind.get("bb_lower", 0), 2), round(ind.get("bb_mid", 0), 2),
-                round(ind.get("bb_upper", 0), 2),
+                round(ind.get("bb_upper", 0), 2), round(ind.get("bbw", 0), 3),
+                round(ind.get("ema50", 0), 2),
+                "SI" if ind.get("senal_pendiente") else "no",
                 "SI" if ind.get("senal_confirmada") else "no",
+                "SI" if ind.get("en_cooldown") else "no",
             ])
         ws.update(filas)
     except Exception as e:
-        print(f"[sheets] error al actualizar indicadores: {e}")
+        print(f"[sheets] error al actualizar Indicadores: {e}")
