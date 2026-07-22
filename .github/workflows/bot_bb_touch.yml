@@ -1,0 +1,53 @@
+name: Bot BB-Touch Diario
+
+on:
+  schedule:
+    # Un solo disparador cada 5 min, en minutos offset (no ":00"/":05"
+    # exactos de reloj UTC redondo) para esquivar la congestión de cron
+    # documentada en GitHub (demoras de hasta 1h45 observadas). Rango
+    # 13:20-19:55 UTC = 10:20-16:55 ART, con margen a los dos lados de
+    # la ventana real de mercado (10:30-17:00 ART).
+    - cron: "2,7,12,17,22,27,32,37,42,47,52,57 13-19 * * 1-5"
+  workflow_dispatch:
+    inputs:
+      modo:
+        description: "apertura, monitoreo o cierre (fuerza esa rutina sola, sin importar la hora)"
+        required: true
+        default: "apertura"
+
+jobs:
+  correr_bot:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Descargar el repo
+        uses: actions/checkout@v4
+
+      - name: Configurar Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Instalar dependencias
+        run: |
+          pip install --upgrade pip
+          pip install yfinance ta pandas numpy requests gspread google-auth
+
+      - name: Correr rutina del bot
+        env:
+          MODO_RUTINA: ${{ github.event_name == 'workflow_dispatch' && inputs.modo || '' }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          GOOGLE_SHEETS_ID: ${{ secrets.GOOGLE_SHEETS_ID }}
+          GOOGLE_SHEETS_CREDENTIALS_JSON: ${{ secrets.GOOGLE_SHEETS_CREDENTIALS_JSON }}
+          IOL_USUARIO: ${{ secrets.IOL_USUARIO }}
+          IOL_PASSWORD: ${{ secrets.IOL_PASSWORD }}
+        run: python bot_bb_touch_diario.py
+
+# NOTA sobre horarios: VENTANA_APERTURA (10:27-11:00 ART) y VENTANA_CIERRE
+# (16:27-16:50 ART) reciben varios reintentos del mismo cron de 5 min --
+# ambas rutinas son seguras de repetir. Fuera de esas ventanas, cada
+# disparo intenta correr rutina_monitoreo_fase_a(), pero un throttle
+# interno (ver bot_bb_touch_diario.py, _debe_correr_monitoreo) hace que
+# efectivamente actúe cada ~10 min, no cada 5, sin necesitar estado
+# persistente entre corridas.
