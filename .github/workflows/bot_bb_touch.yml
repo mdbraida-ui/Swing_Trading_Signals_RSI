@@ -18,7 +18,7 @@ on:
 jobs:
   correr_bot:
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 15
     steps:
       - name: Descargar el repo
         uses: actions/checkout@v4
