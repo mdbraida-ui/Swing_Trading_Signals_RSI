@@ -1,3 +1,4 @@
+name: Detector de Opciones GGAL
 on:
   schedule:
     # Una vez por hora, offset de minuto (no ":00" exacto) por el mismo
