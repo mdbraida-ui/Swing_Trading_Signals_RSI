@@ -1,0 +1,5 @@
+ticker_yahoo,simbolo_iol_subyacente,vencimiento,rango_strikes,activo,cantidad_contratos,opciones_por_contrato
+COME.BA,COME,2026-10-16,6,SI,1,100
+GGAL.BA,GGAL,2026-10-16,6,SI,1,100
+PAMP.BA,PAMP,2026-10-16,6,SI,1,100
+YPFD.BA,YPFD,2026-10-16,6,SI,1,1000
