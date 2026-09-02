@@ -1,0 +1,50 @@
+name: Bot de Opciones (GGAL, PAMP, YPFD, COME)
+on:
+  schedule:
+    # Apertura: 10:40 ART = 13:40 UTC -- notifica conexión
+    - cron: "40 13 * * 1-5"
+    # Controles cada hora, 5 min antes del cierre de cada vela de 1h:
+    # 11:25, 12:25, 13:25, 14:25, 15:25, 16:25 ART = 14:25 a 19:25 UTC
+    - cron: "25 14-19 * * 1-5"
+    # Cierre: 17:40 ART = 20:40 UTC -- notifica desconexión/resumen
+    - cron: "40 20 * * 1-5"
+  workflow_dispatch:
+    inputs:
+      modo:
+        description: "apertura, control o cierre (fuerza esa rutina sola, sin importar la hora)"
+        required: true
+        default: "control"
+jobs:
+  correr_bot:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Descargar el repo
+        uses: actions/checkout@v4
+      - name: Configurar Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Instalar dependencias
+        run: |
+          pip install --upgrade pip
+          pip install yfinance ta pandas numpy requests gspread google-auth
+      - name: Correr rutina del bot de opciones
+        env:
+          MODO_RUTINA: ${{ github.event_name == 'workflow_dispatch' && inputs.modo || '' }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          GOOGLE_SHEETS_ID_OPCIONES: ${{ secrets.GOOGLE_SHEETS_ID_OPCIONES }}
+          GOOGLE_SHEETS_CREDENTIALS_JSON: ${{ secrets.GOOGLE_SHEETS_CREDENTIALS_JSON }}
+          IOL_USUARIO: ${{ secrets.IOL_USUARIO }}
+          IOL_PASSWORD: ${{ secrets.IOL_PASSWORD }}
+        run: python bot_opciones_multiticker.py
+# NOTA: las 8 corridas diarias (10:32, 11:25, 12:25, 13:25, 14:25,
+# 15:25, 16:25, 16:35 ART) reusan la MISMA lógica de main() en
+# bot_opciones_multiticker.py -- ese script no distingue todavía entre
+# "apertura"/"control"/"cierre" como el bot de acciones (que sí separa
+# rutinas distintas). Por ahora las 8 corridas hacen lo mismo: revisan
+# salidas de posiciones abiertas + evalúan entradas nuevas. Si en algún
+# momento se quiere que la apertura/cierre hagan algo DISTINTO (por
+# ejemplo, solo notificar sin operar), hay que sumar esa lógica de
+# MODO_RUTINA al script -- todavía no está implementada.
