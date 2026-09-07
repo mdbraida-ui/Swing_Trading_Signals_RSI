@@ -1,4 +1,4 @@
-name: Bot de Opciones (GGAL, PAMP, YPFD, COME)
+⁷name: Bot de Opciones (GGAL, PAMP, YPFD, COME)
 on:
   schedule:
     # Apertura: 10:40 ART = 13:40 UTC -- notifica conexión
