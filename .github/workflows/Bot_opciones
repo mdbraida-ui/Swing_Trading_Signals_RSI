@@ -1,4 +1,4 @@
-⁷name: Bot de Opciones (GGAL, PAMP, YPFD, COME)
+name: Bot de Opciones (GGAL, PAMP, YPFD, COME)
 on:
   schedule:
     # Apertura: 10:40 ART = 13:40 UTC -- notifica conexión
@@ -52,4 +52,3 @@ jobs:
 # momento se quiere que la apertura/cierre hagan algo DISTINTO (por
 # ejemplo, solo notificar sin operar), hay que sumar esa lógica de
 # MODO_RUTINA al script -- todavía no está implementada.
-
